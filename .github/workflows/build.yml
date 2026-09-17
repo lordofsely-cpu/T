@@ -1,0 +1,135 @@
+name: Build Sely APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Sely Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare Android SDK
+        shell: bash
+        run: |
+          set -e
+
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+          echo "$SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | head -n 1)
+          fi
+
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "sdkmanager was not found."
+            exit 1
+          fi
+
+          echo "Using sdkmanager: $SDKMANAGER"
+
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
+
+      - name: Set up Gradle 8.4
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.4'
+
+      - name: Extract Sely project
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf project
+
+          if [ -f "SelyApp-fixed.zip" ]; then
+            mkdir -p project
+            unzip -q -o "SelyApp-fixed.zip" -d project
+
+            if [ -f "project/settings.gradle" ] && [ -f "project/app/build.gradle" ]; then
+              echo "Sely project found at project/"
+            else
+              FOUND=$(find project -type f -path "*/app/build.gradle" | head -n 1)
+
+              if [ -z "$FOUND" ]; then
+                echo "Could not find app/build.gradle inside the ZIP."
+                find project -maxdepth 4 -type f
+                exit 1
+              fi
+
+              ROOT=$(dirname "$(dirname "$FOUND")")
+
+              mkdir -p project-root
+              cp -a "$ROOT"/. project-root/
+
+              rm -rf project
+              mv project-root project
+            fi
+          else
+            echo "SelyApp-fixed.zip not found."
+            echo "Using repository as the Android project."
+
+            mkdir -p project
+            cp -a . project/
+          fi
+
+          echo "Android project:"
+          find project -maxdepth 2 -type f | sort
+
+          test -f project/settings.gradle
+          test -f project/build.gradle
+          test -f project/app/build.gradle
+
+      - name: Enable AndroidX
+        working-directory: project
+        run: |
+          touch gradle.properties
+
+          grep -qxF 'android.useAndroidX=true' gradle.properties || \
+            echo 'android.useAndroidX=true' >> gradle.properties
+
+          grep -qxF 'android.enableJetifier=true' gradle.properties || \
+            echo 'android.enableJetifier=true' >> gradle.properties
+
+      - name: Build Sely Debug APK
+        working-directory: project
+        run: |
+          gradle assembleDebug --stacktrace --no-daemon
+
+      - name: Verify APK
+        run: |
+          test -f project/app/build/outputs/apk/debug/app-debug.apk
+          ls -lh project/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload Sely APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sely-APK
+          path: project/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
