@@ -47,8 +47,6 @@ jobs:
             exit 1
           fi
 
-          echo "Using sdkmanager: $SDKMANAGER"
-
           yes | "$SDKMANAGER" --licenses >/dev/null || true
 
           "$SDKMANAGER" \
@@ -68,46 +66,54 @@ jobs:
 
           rm -rf project
 
-          if [ -f "SelyApp-fixed.zip" ]; then
-            mkdir -p project
-            unzip -q -o "SelyApp-fixed.zip" -d project
-
-            if [ -f "project/settings.gradle" ] && [ -f "project/app/build.gradle" ]; then
-              echo "Sely project found at project/"
-            else
-              FOUND=$(find project -type f -path "*/app/build.gradle" | head -n 1)
-
-              if [ -z "$FOUND" ]; then
-                echo "Could not find app/build.gradle inside the ZIP."
-                find project -maxdepth 4 -type f
-                exit 1
-              fi
-
-              ROOT=$(dirname "$(dirname "$FOUND")")
-
-              mkdir -p project-root
-              cp -a "$ROOT"/. project-root/
-
-              rm -rf project
-              mv project-root project
-            fi
-          else
-            echo "SelyApp-fixed.zip not found."
-            echo "Using repository as the Android project."
-
-            mkdir -p project
-            cp -a . project/
+          if [ ! -f "SelyApp-updated.zip" ]; then
+            echo "ERROR: SelyApp-updated.zip was not found."
+            echo "Files in repository:"
+            ls -la
+            exit 1
           fi
 
-          echo "Android project:"
-          find project -maxdepth 2 -type f | sort
+          echo "Found SelyApp-updated.zip"
+
+          mkdir -p project
+
+          unzip -q -o "SelyApp-updated.zip" -d project
+
+          echo "Extracted files:"
+          find project -maxdepth 3 -type f | sort
+
+          # Handle ZIPs that contain an extra top-level folder
+          if [ ! -f "project/settings.gradle" ] || [ ! -f "project/app/build.gradle" ]; then
+
+            FOUND=$(find project -type f -path "*/app/build.gradle" | head -n 1)
+
+            if [ -z "$FOUND" ]; then
+              echo "ERROR: app/build.gradle was not found."
+              find project -type f | sort
+              exit 1
+            fi
+
+            ROOT=$(dirname "$(dirname "$FOUND")")
+
+            mkdir -p project-root
+            cp -a "$ROOT"/. project-root/
+
+            rm -rf project
+            mv project-root project
+          fi
+
+          echo "Final Android project:"
+          find project -maxdepth 3 -type f | sort
 
           test -f project/settings.gradle
           test -f project/build.gradle
           test -f project/app/build.gradle
 
+          echo "Android project structure verified."
+
       - name: Enable AndroidX
         working-directory: project
+        shell: bash
         run: |
           touch gradle.properties
 
@@ -119,10 +125,12 @@ jobs:
 
       - name: Build Sely Debug APK
         working-directory: project
+        shell: bash
         run: |
           gradle assembleDebug --stacktrace --no-daemon
 
       - name: Verify APK
+        shell: bash
         run: |
           test -f project/app/build/outputs/apk/debug/app-debug.apk
           ls -lh project/app/build/outputs/apk/debug/app-debug.apk
